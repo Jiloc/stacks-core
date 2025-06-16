@@ -19,9 +19,8 @@ TEMP_DIR="${TEMP_DIR:-$CARGO_TARGET_DIR/doc-generation}"
 EXTRACT_DOCS_BIN="${EXTRACT_DOCS_BIN:-$CARGO_TARGET_DIR/release/extract-docs}"
 GENERATE_MARKDOWN_BIN="${GENERATE_MARKDOWN_BIN:-$CARGO_TARGET_DIR/release/generate-markdown}"
 
-# Template and mappings paths - allow override via environment
+# Template path - allow override via environment
 TEMPLATE_PATH="${TEMPLATE_PATH:-$SCRIPT_DIR/templates/reference_template.md}"
-SECTION_MAPPINGS_PATH="${SECTION_MAPPINGS_PATH:-$SCRIPT_DIR/section_name_mappings.json}"
 
 # Check if binaries are pre-built (skip build step)
 SKIP_BUILD="${SKIP_BUILD:-false}"
@@ -67,24 +66,20 @@ main() {
     log_info "Extracting configuration documentation using rustdoc..."
     EXTRACTED_JSON="$TEMP_DIR/extracted-config-docs.json"
 
-    # Determine the list of structs to document from section_name_mappings.json
-    # If the caller sets $TARGET_STRUCTS explicitly we honour that override.
-    if [[ -z "${TARGET_STRUCTS:-}" ]]; then
-        TARGET_STRUCTS="$(jq -r 'keys | join(",")' "$SECTION_MAPPINGS_PATH")"
-    fi
-    log_info "Structs to be documented: $TARGET_STRUCTS"
+    # Extract documentation using the main config struct (automatically discovers all related structs)
+    log_info "Auto-discovering configuration structs from ConfigFile..."
 
     "$EXTRACT_DOCS_BIN" \
         --package stackslib \
-        --structs "$TARGET_STRUCTS" \
+        --main-config-struct "ConfigFile" \
         --output "$EXTRACTED_JSON"
 
     # Step 3: Generate Markdown
     log_info "Generating Markdown documentation..."
     MARKDOWN_OUTPUT="$OUTPUT_DIR/configuration-reference.md"
 
-    # Call the command
-    "$GENERATE_MARKDOWN_BIN" --input "$EXTRACTED_JSON" --output "$MARKDOWN_OUTPUT" --template "$TEMPLATE_PATH" --section-name-mappings "$SECTION_MAPPINGS_PATH"
+    # Call the command (no longer needs section name mappings)
+    "$GENERATE_MARKDOWN_BIN" --input "$EXTRACTED_JSON" --output "$MARKDOWN_OUTPUT" --template "$TEMPLATE_PATH"
 
     log_info "Documentation generation complete!"
     log_info "Generated files:"

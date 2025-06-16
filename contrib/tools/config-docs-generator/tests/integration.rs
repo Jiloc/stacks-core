@@ -36,7 +36,7 @@ fn test_extract_docs_invalid_package() {
         "nonexistent-package",
         "--output",
         output_file.to_str().unwrap(),
-        "--structs",
+        "--main-config-struct",
         "TestStruct",
     ]);
 
@@ -72,15 +72,13 @@ fn test_generate_markdown_missing_input_file() {
     let temp_dir = TempDir::new().unwrap();
     let output_file = temp_dir.path().join("output.md");
     let template_file = temp_dir.path().join("template.md");
-    let mappings_file = temp_dir.path().join("mappings.json");
 
-    // Create valid template and mappings files
+    // Create valid template file
     fs::write(
         &template_file,
         "# Test\n{{toc_content}}\n{{struct_sections}}",
     )
     .unwrap();
-    fs::write(&mappings_file, "{}").unwrap();
 
     let mut cmd = Command::cargo_bin("generate-markdown").unwrap();
     cmd.args([
@@ -90,8 +88,6 @@ fn test_generate_markdown_missing_input_file() {
         output_file.to_str().unwrap(),
         "--template",
         template_file.to_str().unwrap(),
-        "--section-name-mappings",
-        mappings_file.to_str().unwrap(),
     ]);
 
     let output = cmd.output().unwrap();
@@ -106,7 +102,6 @@ fn test_generate_markdown_invalid_input_json() {
     let input_file = temp_dir.path().join("input.json");
     let output_file = temp_dir.path().join("output.md");
     let template_file = temp_dir.path().join("template.md");
-    let mappings_file = temp_dir.path().join("mappings.json");
 
     // Create invalid JSON input
     fs::write(&input_file, "invalid json").unwrap();
@@ -115,7 +110,6 @@ fn test_generate_markdown_invalid_input_json() {
         "# Test\n{{toc_content}}\n{{struct_sections}}",
     )
     .unwrap();
-    fs::write(&mappings_file, "{}").unwrap();
 
     let mut cmd = Command::cargo_bin("generate-markdown").unwrap();
     cmd.args([
@@ -125,8 +119,6 @@ fn test_generate_markdown_invalid_input_json() {
         output_file.to_str().unwrap(),
         "--template",
         template_file.to_str().unwrap(),
-        "--section-name-mappings",
-        mappings_file.to_str().unwrap(),
     ]);
 
     let output = cmd.output().unwrap();
@@ -140,19 +132,19 @@ fn test_generate_markdown_missing_template_file() {
     let temp_dir = TempDir::new().unwrap();
     let input_file = temp_dir.path().join("input.json");
     let output_file = temp_dir.path().join("output.md");
-    let mappings_file = temp_dir.path().join("mappings.json");
 
-    // Create valid input and mappings
+    // Create valid input
     let config_docs = json!({
         "structs": [],
-        "referenced_constants": {}
+        "referenced_constants": {},
+        "section_to_struct_mapping": {}
     });
     fs::write(
         &input_file,
         serde_json::to_string_pretty(&config_docs).unwrap(),
     )
     .unwrap();
-    fs::write(&mappings_file, "{}").unwrap();
+
 
     let mut cmd = Command::cargo_bin("generate-markdown").unwrap();
     cmd.args([
@@ -162,8 +154,6 @@ fn test_generate_markdown_missing_template_file() {
         output_file.to_str().unwrap(),
         "--template",
         "nonexistent_template.md",
-        "--section-name-mappings",
-        mappings_file.to_str().unwrap(),
     ]);
 
     let output = cmd.output().unwrap();
@@ -173,55 +163,11 @@ fn test_generate_markdown_missing_template_file() {
 }
 
 #[test]
-fn test_generate_markdown_invalid_mappings_json() {
-    let temp_dir = TempDir::new().unwrap();
-    let input_file = temp_dir.path().join("input.json");
-    let output_file = temp_dir.path().join("output.md");
-    let template_file = temp_dir.path().join("template.md");
-    let mappings_file = temp_dir.path().join("mappings.json");
-
-    // Create valid input and template, invalid mappings
-    let config_docs = json!({
-        "structs": [],
-        "referenced_constants": {}
-    });
-    fs::write(
-        &input_file,
-        serde_json::to_string_pretty(&config_docs).unwrap(),
-    )
-    .unwrap();
-    fs::write(
-        &template_file,
-        "# Test\n{{toc_content}}\n{{struct_sections}}",
-    )
-    .unwrap();
-    fs::write(&mappings_file, "invalid json").unwrap();
-
-    let mut cmd = Command::cargo_bin("generate-markdown").unwrap();
-    cmd.args([
-        "--input",
-        input_file.to_str().unwrap(),
-        "--output",
-        output_file.to_str().unwrap(),
-        "--template",
-        template_file.to_str().unwrap(),
-        "--section-name-mappings",
-        mappings_file.to_str().unwrap(),
-    ]);
-
-    let output = cmd.output().unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Failed to parse section name mappings JSON"));
-}
-
-#[test]
 fn test_generate_markdown_successful_execution() {
     let temp_dir = TempDir::new().unwrap();
     let input_file = temp_dir.path().join("input.json");
     let output_file = temp_dir.path().join("output.md");
     let template_file = temp_dir.path().join("template.md");
-    let mappings_file = temp_dir.path().join("mappings.json");
 
     // Create valid test data
     let config_docs = json!({
@@ -239,7 +185,10 @@ fn test_generate_markdown_successful_execution() {
                 "units": null
             }]
         }],
-        "referenced_constants": {}
+        "referenced_constants": {},
+        "section_to_struct_mapping": {
+            "[teststruct]": "TestStruct"
+        }
     });
 
     fs::write(
@@ -252,7 +201,7 @@ fn test_generate_markdown_successful_execution() {
         "# Configuration Reference\n\n{{toc_content}}\n\n{{struct_sections}}",
     )
     .unwrap();
-    fs::write(&mappings_file, r#"{"TestStruct": "[test]"}"#).unwrap();
+
 
     let mut cmd = Command::cargo_bin("generate-markdown").unwrap();
     cmd.args([
@@ -262,8 +211,6 @@ fn test_generate_markdown_successful_execution() {
         output_file.to_str().unwrap(),
         "--template",
         template_file.to_str().unwrap(),
-        "--section-name-mappings",
-        mappings_file.to_str().unwrap(),
     ]);
 
     let output = cmd.output().unwrap();
@@ -274,7 +221,7 @@ fn test_generate_markdown_successful_execution() {
     // Verify output file was created and contains expected content
     let output_content = fs::read_to_string(&output_file).unwrap();
     assert!(output_content.contains("Configuration Reference"));
-    assert!(output_content.contains("[test]"));
+    assert!(output_content.contains("[teststruct]")); // Now auto-derived
     assert!(output_content.contains("test_field"));
     assert!(output_content.contains("A test field"));
 }
@@ -284,12 +231,12 @@ fn test_generate_markdown_file_write_permission_error() {
     let temp_dir = TempDir::new().unwrap();
     let input_file = temp_dir.path().join("input.json");
     let template_file = temp_dir.path().join("template.md");
-    let mappings_file = temp_dir.path().join("mappings.json");
 
     // Create valid input files
     let config_docs = json!({
         "structs": [],
-        "referenced_constants": {}
+        "referenced_constants": {},
+        "section_to_struct_mapping": {}
     });
     fs::write(
         &input_file,
@@ -301,10 +248,10 @@ fn test_generate_markdown_file_write_permission_error() {
         "# Test\n{{toc_content}}\n{{struct_sections}}",
     )
     .unwrap();
-    fs::write(&mappings_file, "{}").unwrap();
 
     // Try to write to a directory that doesn't exist (should fail)
     let invalid_output = "/nonexistent/path/output.md";
+
 
     let mut cmd = Command::cargo_bin("generate-markdown").unwrap();
     cmd.args([
@@ -314,8 +261,6 @@ fn test_generate_markdown_file_write_permission_error() {
         invalid_output,
         "--template",
         template_file.to_str().unwrap(),
-        "--section-name-mappings",
-        mappings_file.to_str().unwrap(),
     ]);
 
     let output = cmd.output().unwrap();
@@ -331,6 +276,7 @@ fn test_generate_markdown_with_real_fixture_data() {
     let temp_dir = TempDir::new().unwrap();
     let output_file = temp_dir.path().join("output.md");
 
+
     // Use the fixture files we created
     let mut cmd = Command::cargo_bin("generate-markdown").unwrap();
     cmd.args([
@@ -340,8 +286,6 @@ fn test_generate_markdown_with_real_fixture_data() {
         output_file.to_str().unwrap(),
         "--template",
         "tests/fixtures/test_template.md",
-        "--section-name-mappings",
-        "tests/fixtures/test_mappings.json",
     ]);
 
     let output = cmd.output().unwrap();
@@ -370,7 +314,6 @@ fn test_generate_markdown_with_complex_field_features() {
     let input_file = temp_dir.path().join("input.json");
     let output_file = temp_dir.path().join("output.md");
     let template_file = temp_dir.path().join("template.md");
-    let mappings_file = temp_dir.path().join("mappings.json");
 
     // Create test data with all field features
     let config_docs = json!({
@@ -443,7 +386,10 @@ fn test_generate_markdown_with_complex_field_features() {
                 }
             ]
         }],
-        "referenced_constants": {}
+        "referenced_constants": {},
+        "section_to_struct_mapping": {
+            "[complexstruct]": "ComplexStruct"
+        }
     });
 
     fs::write(
@@ -456,7 +402,6 @@ fn test_generate_markdown_with_complex_field_features() {
         "# Complex Test\n\n{{toc_content}}\n\n{{struct_sections}}",
     )
     .unwrap();
-    fs::write(&mappings_file, r#"{}"#).unwrap();
 
     let mut cmd = Command::cargo_bin("generate-markdown").unwrap();
     cmd.args([
@@ -466,8 +411,6 @@ fn test_generate_markdown_with_complex_field_features() {
         output_file.to_str().unwrap(),
         "--template",
         template_file.to_str().unwrap(),
-        "--section-name-mappings",
-        mappings_file.to_str().unwrap(),
     ]);
 
     let output = cmd.output().unwrap();
@@ -499,7 +442,6 @@ fn test_generate_markdown_with_constant_references() {
     let input_file = temp_dir.path().join("input.json");
     let output_file = temp_dir.path().join("output.md");
     let template_file = temp_dir.path().join("template.md");
-    let mappings_file = temp_dir.path().join("mappings.json");
 
     // Create test data with constant references
     let config_docs = json!({
@@ -520,6 +462,9 @@ fn test_generate_markdown_with_constant_references() {
         "referenced_constants": {
             "DEFAULT_TIMEOUT": "30",
             "MAX_RETRIES": "3"
+        },
+        "section_to_struct_mapping": {
+            "[configwithconstants]": "ConfigWithConstants"
         }
     });
 
@@ -533,7 +478,6 @@ fn test_generate_markdown_with_constant_references() {
         "# Constants Test\n\n{{toc_content}}\n\n{{struct_sections}}",
     )
     .unwrap();
-    fs::write(&mappings_file, r#"{}"#).unwrap();
 
     let mut cmd = Command::cargo_bin("generate-markdown").unwrap();
     cmd.args([
@@ -543,8 +487,6 @@ fn test_generate_markdown_with_constant_references() {
         output_file.to_str().unwrap(),
         "--template",
         template_file.to_str().unwrap(),
-        "--section-name-mappings",
-        mappings_file.to_str().unwrap(),
     ]);
 
     let output = cmd.output().unwrap();
@@ -567,7 +509,6 @@ fn test_generate_markdown_empty_struct_description() {
     let input_file = temp_dir.path().join("input.json");
     let output_file = temp_dir.path().join("output.md");
     let template_file = temp_dir.path().join("template.md");
-    let mappings_file = temp_dir.path().join("mappings.json");
 
     // Create test data with null struct description
     let config_docs = json!({
@@ -585,7 +526,10 @@ fn test_generate_markdown_empty_struct_description() {
                 "units": null
             }]
         }],
-        "referenced_constants": {}
+        "referenced_constants": {},
+        "section_to_struct_mapping": {
+            "[nodescstruct]": "NoDescStruct"
+        }
     });
 
     fs::write(
@@ -598,7 +542,6 @@ fn test_generate_markdown_empty_struct_description() {
         "# No Description Test\n\n{{toc_content}}\n\n{{struct_sections}}",
     )
     .unwrap();
-    fs::write(&mappings_file, r#"{}"#).unwrap();
 
     let mut cmd = Command::cargo_bin("generate-markdown").unwrap();
     cmd.args([
@@ -608,8 +551,6 @@ fn test_generate_markdown_empty_struct_description() {
         output_file.to_str().unwrap(),
         "--template",
         template_file.to_str().unwrap(),
-        "--section-name-mappings",
-        mappings_file.to_str().unwrap(),
     ]);
 
     let output = cmd.output().unwrap();
@@ -630,7 +571,6 @@ fn test_generate_markdown_multiple_structs() {
     let input_file = temp_dir.path().join("input.json");
     let output_file = temp_dir.path().join("output.md");
     let template_file = temp_dir.path().join("template.md");
-    let mappings_file = temp_dir.path().join("mappings.json");
 
     // Create test data with multiple structs
     let config_docs = json!({
@@ -664,7 +604,11 @@ fn test_generate_markdown_multiple_structs() {
                 }]
             }
         ],
-        "referenced_constants": {}
+        "referenced_constants": {},
+        "section_to_struct_mapping": {
+            "[firststruct]": "FirstStruct",
+            "[secondstruct]": "SecondStruct"
+        }
     });
 
     fs::write(
@@ -677,7 +621,6 @@ fn test_generate_markdown_multiple_structs() {
         "# Multiple Structs Test\n\n{{toc_content}}\n\n{{struct_sections}}",
     )
     .unwrap();
-    fs::write(&mappings_file, r#"{}"#).unwrap();
 
     let mut cmd = Command::cargo_bin("generate-markdown").unwrap();
     cmd.args([
@@ -687,8 +630,6 @@ fn test_generate_markdown_multiple_structs() {
         output_file.to_str().unwrap(),
         "--template",
         template_file.to_str().unwrap(),
-        "--section-name-mappings",
-        mappings_file.to_str().unwrap(),
     ]);
 
     let output = cmd.output().unwrap();

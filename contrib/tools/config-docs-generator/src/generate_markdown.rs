@@ -44,6 +44,7 @@ struct StructDoc {
 struct ConfigDocs {
     structs: Vec<StructDoc>,
     referenced_constants: HashMap<String, Option<String>>, // Name -> Resolved Value (or None)
+    section_to_struct_mapping: HashMap<String, String>,    // section_name -> struct_name
 }
 
 // Global context for cross-references
@@ -88,19 +89,11 @@ fn main() -> Result<()> {
                 )
                 .required(true),
         )
-        .arg(
-            Arg::new("mappings")
-                .long("section-name-mappings")
-                .value_name("FILE")
-                .help("Optional JSON file for struct name to TOML section name mappings")
-                .required(true),
-        )
         .get_matches();
 
     let input_path = matches.get_one::<String>("input").unwrap();
     let output_path = matches.get_one::<String>("output").unwrap();
     let template_path = matches.get_one::<String>("template").unwrap();
-    let mappings_path = matches.get_one::<String>("mappings").unwrap();
 
     let input_content = fs::read_to_string(input_path)
         .with_context(|| format!("Failed to read input JSON file: {}", input_path))?;
@@ -108,9 +101,7 @@ fn main() -> Result<()> {
     let config_docs: ConfigDocs =
         serde_json::from_str(&input_content).with_context(|| "Failed to parse input JSON")?;
 
-    let custom_mappings = load_section_name_mappings(mappings_path)?;
-
-    let markdown = generate_markdown(&config_docs, template_path, &custom_mappings)?;
+    let markdown = generate_markdown(&config_docs, template_path)?;
 
     fs::write(output_path, markdown)
         .with_context(|| format!("Failed to write output file: {}", output_path))?;
@@ -120,24 +111,6 @@ fn main() -> Result<()> {
         output_path
     );
     Ok(())
-}
-
-fn load_section_name_mappings(mappings_file: &str) -> Result<HashMap<String, String>> {
-    let content = fs::read_to_string(mappings_file).with_context(|| {
-        format!(
-            "Failed to read section name mappings file: {}",
-            mappings_file
-        )
-    })?;
-
-    let mappings: HashMap<String, String> = serde_json::from_str(&content).with_context(|| {
-        format!(
-            "Failed to parse section name mappings JSON: {}",
-            mappings_file
-        )
-    })?;
-
-    Ok(mappings)
 }
 
 fn load_template(template_path: &str) -> Result<String> {
@@ -156,21 +129,24 @@ fn render_template(template: &str, variables: HashMap<String, String>) -> String
     result
 }
 
-fn generate_markdown(
-    config_docs: &ConfigDocs,
-    template_path: &str,
-    custom_mappings: &HashMap<String, String>,
-) -> Result<String> {
+fn generate_markdown(config_docs: &ConfigDocs, template_path: &str) -> Result<String> {
     // Load template
     let template = load_template(template_path)?;
 
+    // Use section mappings from ConfigDocs (reverse mapping: struct_name -> section_name)
+    let custom_mappings: HashMap<String, String> = config_docs
+        .section_to_struct_mapping
+        .iter()
+        .map(|(section, struct_name)| (struct_name.clone(), section.clone()))
+        .collect();
+
     // Build global context for cross-references
-    let global_context = build_global_context(config_docs, custom_mappings);
+    let global_context = build_global_context(config_docs, &custom_mappings);
 
     // Build table of contents
     let mut toc_content = String::new();
     for struct_doc in &config_docs.structs {
-        let section_name = struct_to_section_name(&struct_doc.name, custom_mappings);
+        let section_name = struct_to_section_name(&struct_doc.name, &custom_mappings);
         toc_content.push_str(&format!(
             "- [{}]({})\n",
             section_name,
@@ -185,7 +161,7 @@ fn generate_markdown(
             &mut struct_sections,
             struct_doc,
             &global_context,
-            custom_mappings,
+            &custom_mappings,
         )?;
         struct_sections.push('\n');
     }
@@ -624,6 +600,7 @@ mod tests {
         ConfigDocs {
             structs,
             referenced_constants: HashMap::new(),
+            section_to_struct_mapping: HashMap::new(),
         }
     }
 
@@ -668,7 +645,7 @@ mod tests {
     fn test_generate_markdown_empty_config() {
         let config_docs = create_config_docs(vec![]);
         let template_path = "templates/reference_template.md";
-        let result = generate_markdown(&config_docs, template_path, &HashMap::new()).unwrap();
+        let result = generate_markdown(&config_docs, template_path).unwrap();
 
         assert!(result.contains("# Stacks Node Configuration Reference"));
         assert!(result.contains("## Table of Contents"));
@@ -681,7 +658,7 @@ mod tests {
         let struct_doc = create_struct_doc("TestStruct", Some("A test struct"), vec![]);
         let config_docs = create_config_docs(vec![struct_doc]);
         let template_path = "templates/reference_template.md";
-        let result = generate_markdown(&config_docs, template_path, &HashMap::new()).unwrap();
+        let result = generate_markdown(&config_docs, template_path).unwrap();
 
         assert!(result.contains("# Stacks Node Configuration Reference"));
         assert!(result.contains("- [[teststruct]](#teststruct)"));
@@ -696,7 +673,7 @@ mod tests {
         let struct_doc = create_struct_doc("TestStruct", Some("A test struct"), vec![field]);
         let config_docs = create_config_docs(vec![struct_doc]);
         let template_path = "templates/reference_template.md";
-        let result = generate_markdown(&config_docs, template_path, &HashMap::new()).unwrap();
+        let result = generate_markdown(&config_docs, template_path).unwrap();
 
         assert!(result.contains("# Stacks Node Configuration Reference"));
         assert!(result.contains("- [[teststruct]](#teststruct)"));
@@ -1180,31 +1157,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_section_name_mappings_file_not_found() {
-        let result = load_section_name_mappings("nonexistent.json");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Failed to read"));
-    }
-
     #[test]
-    fn test_load_section_name_mappings_invalid_json() {
-        use std::io::Write;
-
-        use tempfile::NamedTempFile;
-
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "invalid json content").unwrap();
-
-        let result = load_section_name_mappings(temp_file.path().to_str().unwrap());
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Failed to parse section name mappings JSON")
-        );
-    }
-
     #[test]
     fn test_load_template_file_not_found() {
         let result = load_template("nonexistent_template.md");
@@ -1252,9 +1205,9 @@ mod tests {
     fn test_generate_markdown_error_paths() {
         // Test with invalid template path
         let config_docs = create_config_docs(vec![]);
-        let custom_mappings = HashMap::new();
+        let custom_mappings: HashMap<String, String> = HashMap::new();
 
-        let result = generate_markdown(&config_docs, "nonexistent_template.md", &custom_mappings);
+        let result = generate_markdown(&config_docs, "nonexistent_template.md");
         assert!(result.is_err());
         assert!(
             result

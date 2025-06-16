@@ -76,5 +76,8 @@
         "NodeConfig::miner": null,
         "NodeConfig::mine_microblocks": null,
         "NodeConfig::require_affirmed_anchor_blocks": null
+    },
+    "section_to_struct_mapping": {
+        "[node]": "NodeConfig"
     }
 }
