@@ -10,7 +10,9 @@ members = [
     "libsigner",
     "stacks-signer",
     "testnet/stacks-node",
-    "contrib/tools/config-docs-generator"]
+    "contrib/tools/config-docs-generator",
+    "clarity-serialization"
+    ]
 
 # Dependencies we want to keep the same between workspace members
 [workspace.dependencies]
