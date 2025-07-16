@@ -511,7 +511,7 @@ impl Value {
                 UNSANITIZED_DEPTH_CHECK
             };
             if stack.len() > depth_check {
-                return Err(CodecError::TypeSignatureTooDeep.into());
+                return Err(CodecError::TypeSignatureTooDeep);
             }
 
             #[allow(clippy::expect_used)]
@@ -1841,7 +1841,7 @@ pub mod tests {
             assert_eq!(expected, &Value::try_deserialize_hex_untyped(test));
             assert_eq!(
                 expected,
-                &Value::try_deserialize_hex_untyped(&format!("0x{}", test))
+                &Value::try_deserialize_hex_untyped(&format!("0x{test}"))
             );
         }
 

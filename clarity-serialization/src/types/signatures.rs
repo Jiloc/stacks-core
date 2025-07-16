@@ -2014,27 +2014,27 @@ impl fmt::Display for TypeSignature {
             IntType => write!(f, "int"),
             UIntType => write!(f, "uint"),
             BoolType => write!(f, "bool"),
-            OptionalType(t) => write!(f, "(optional {})", t),
+            OptionalType(t) => write!(f, "(optional {t})"),
             ResponseType(v) => write!(f, "(response {} {})", v.0, v.1),
-            TupleType(t) => write!(f, "{}", t),
+            TupleType(t) => write!(f, "{t}"),
             PrincipalType => write!(f, "principal"),
-            SequenceType(SequenceSubtype::BufferType(len)) => write!(f, "(buff {})", len),
+            SequenceType(SequenceSubtype::BufferType(len)) => write!(f, "(buff {len})"),
             SequenceType(SequenceSubtype::ListType(list_type_data)) => write!(
                 f,
                 "(list {} {})",
                 list_type_data.max_len, list_type_data.entry_type
             ),
             SequenceType(SequenceSubtype::StringType(StringSubtype::ASCII(len))) => {
-                write!(f, "(string-ascii {})", len)
+                write!(f, "(string-ascii {len})")
             }
             SequenceType(SequenceSubtype::StringType(StringSubtype::UTF8(len))) => {
-                write!(f, "(string-utf8 {})", len)
+                write!(f, "(string-utf8 {len})")
             }
             CallableType(CallableSubtype::Trait(trait_id)) | TraitReferenceType(trait_id) => {
-                write!(f, "<{}>", trait_id)
+                write!(f, "<{trait_id}>")
             }
             CallableType(CallableSubtype::Principal(contract_id)) => {
-                write!(f, "(principal {})", contract_id)
+                write!(f, "(principal {contract_id})")
             }
             ListUnionType(_) => write!(f, "principal"),
         }
