@@ -1,11 +1,11 @@
-use crate::vm::errors::Error;
+use crate::errors::CodecError;
 
 pub trait ClaritySerializable {
     fn serialize(&self) -> String;
 }
 
 pub trait ClarityDeserializable<T> {
-    fn deserialize(json: &str) -> Result<T, Error>;
+    fn deserialize(json: &str) -> Result<T, CodecError>;
 }
 
 impl ClaritySerializable for String {
@@ -15,7 +15,7 @@ impl ClaritySerializable for String {
 }
 
 impl ClarityDeserializable<String> for String {
-    fn deserialize(serialized: &str) -> Result<String, Error> {
+    fn deserialize(serialized: &str) -> Result<String, CodecError> {
         Ok(serialized.into())
     }
 }

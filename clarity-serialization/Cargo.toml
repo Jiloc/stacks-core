@@ -29,7 +29,6 @@ default = []
 developer-mode = ["stacks_common/developer-mode"]
 testing = []
 slog_json = ["stacks_common/slog_json"]
-disable-costs = []
 
 # Wasm-specific features for easier configuration
 wasm-web = ["stacks_common/wasm-web"]

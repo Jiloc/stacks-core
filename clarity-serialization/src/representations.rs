@@ -23,7 +23,7 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use stacks_common::codec::{Error as codec_error, StacksMessageCodec, read_next, write_next};
 
-use crate::vm::errors::RuntimeErrorType;
+use crate::errors::CodecError;
 
 pub const CONTRACT_MIN_NAME_LENGTH: usize = 1;
 pub const CONTRACT_MAX_NAME_LENGTH: usize = 40;
@@ -67,8 +67,8 @@ guarded_string!(
     "ClarityName",
     CLARITY_NAME_REGEX,
     MAX_STRING_LEN,
-    RuntimeErrorType,
-    RuntimeErrorType::BadNameValue
+    CodecError,
+    CodecError::InvalidClarityName
 );
 
 guarded_string!(
@@ -76,8 +76,8 @@ guarded_string!(
     "ContractName",
     CONTRACT_NAME_REGEX,
     MAX_STRING_LEN,
-    RuntimeErrorType,
-    RuntimeErrorType::BadNameValue
+    CodecError,
+    CodecError::InvalidContractName
 );
 
 impl StacksMessageCodec for ClarityName {

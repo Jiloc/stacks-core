@@ -15,7 +15,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::io::{Read, Write};
-use std::{cmp, error, str};
+use std::{cmp, str};
 
 use lazy_static::lazy_static;
 use stacks_common::codec::{Error as codec_error, StacksMessageCodec};
@@ -24,6 +24,7 @@ use stacks_common::util::hash::{hex_bytes, to_hex};
 use stacks_common::util::retry::BoundReader;
 
 use super::{ListTypeData, TupleTypeSignature};
+use crate::errors::CodecError;
 use crate::representations::{ClarityName, ContractName, MAX_STRING_LEN};
 use crate::traits::{ClarityDeserializable, ClaritySerializable};
 use crate::types::{
@@ -31,24 +32,6 @@ use crate::types::{
     MAX_VALUE_SIZE, OptionalData, PrincipalData, QualifiedContractIdentifier, SequenceData,
     SequenceSubtype, StandardPrincipalData, StringSubtype, TupleData, TypeSignature, Value,
 };
-use crate::vm::errors::{CheckErrors, Error as ClarityError, IncomparableError, InterpreterError};
-
-/// Errors that may occur in serialization or deserialization
-/// If deserialization failed because the described type is a bad type and
-///   a CheckError is thrown, it gets wrapped in BadTypeError.
-/// Any IOErrrors from the supplied buffer will manifest as IOError variants,
-///   except for EOF -- if the deserialization code experiences an EOF, it is caught
-///   and rethrown as DeserializationError
-#[derive(Debug, PartialEq)]
-pub enum SerializationError {
-    IOError(IncomparableError<std::io::Error>),
-    BadTypeError(CheckErrors),
-    DeserializationError(String),
-    DeserializeExpected(TypeSignature),
-    LeftoverBytesInDeserialization,
-    SerializationError(String),
-    UnexpectedSerialization,
-}
 
 lazy_static! {
     pub static ref NONE_SERIALIZATION_LEN: u64 = {
@@ -70,66 +53,6 @@ const SANITIZATION_READ_BOUND: u64 = 15_000_000;
 /// After epoch-2.4, with type sanitization support, the full
 ///  clarity depth limit is supported.
 const UNSANITIZED_DEPTH_CHECK: usize = 16;
-
-impl std::fmt::Display for SerializationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            SerializationError::IOError(e) => {
-                write!(f, "Serialization error caused by IO: {}", e.err)
-            }
-            SerializationError::BadTypeError(e) => {
-                write!(f, "Deserialization error, bad type, caused by: {}", e)
-            }
-            SerializationError::DeserializationError(e) => {
-                write!(f, "Deserialization error: {}", e)
-            }
-            SerializationError::SerializationError(e) => {
-                write!(f, "Serialization error: {}", e)
-            }
-            SerializationError::DeserializeExpected(e) => write!(
-                f,
-                "Deserialization expected the type of the input to be: {}",
-                e
-            ),
-            SerializationError::UnexpectedSerialization => {
-                write!(f, "The serializer handled an input in an unexpected way")
-            }
-            SerializationError::LeftoverBytesInDeserialization => {
-                write!(f, "Deserialization error: bytes left over in buffer")
-            }
-        }
-    }
-}
-
-impl error::Error for SerializationError {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        match self {
-            // SerializationError::IOError(e) => Some(&e.err),
-            SerializationError::BadTypeError(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-// Note: a byte stream that describes a longer type than
-//   there are available bytes to read will result in an IOError(UnexpectedEOF)
-impl From<std::io::Error> for SerializationError {
-    fn from(err: std::io::Error) -> Self {
-        SerializationError::IOError(IncomparableError { err })
-    }
-}
-
-impl From<&str> for SerializationError {
-    fn from(e: &str) -> Self {
-        SerializationError::DeserializationError(e.into())
-    }
-}
-
-impl From<CheckErrors> for SerializationError {
-    fn from(e: CheckErrors) -> Self {
-        SerializationError::BadTypeError(e)
-    }
-}
 
 define_u8_enum!(TypePrefix {
     Int = 0,
@@ -200,7 +123,7 @@ impl From<&Value> for TypePrefix {
 ///   are repeatedly serialized or deserialized.
 trait ClarityValueSerializable<T: std::marker::Sized> {
     fn serialize_write<W: Write>(&self, w: &mut W) -> std::io::Result<()>;
-    fn deserialize_read<R: Read>(r: &mut R) -> Result<T, SerializationError>;
+    fn deserialize_read<R: Read>(r: &mut R) -> Result<T, CodecError>;
 }
 
 impl ClarityValueSerializable<StandardPrincipalData> for StandardPrincipalData {
@@ -209,13 +132,13 @@ impl ClarityValueSerializable<StandardPrincipalData> for StandardPrincipalData {
         w.write_all(&self.1)
     }
 
-    fn deserialize_read<R: Read>(r: &mut R) -> Result<Self, SerializationError> {
+    fn deserialize_read<R: Read>(r: &mut R) -> Result<Self, CodecError> {
         let mut version = [0; 1];
         let mut data = [0; 20];
         r.read_exact(&mut version)?;
         r.read_exact(&mut data)?;
         StandardPrincipalData::new(version[0], data)
-            .map_err(|_| SerializationError::UnexpectedSerialization)
+            .map_err(|_| CodecError::UnexpectedSerialization)
     }
 }
 
@@ -229,22 +152,24 @@ macro_rules! serialize_guarded_string {
                 w.write_all(self.as_str().as_bytes())
             }
 
-            fn deserialize_read<R: Read>(r: &mut R) -> Result<Self, SerializationError> {
+            fn deserialize_read<R: Read>(r: &mut R) -> Result<Self, CodecError> {
                 let mut len = [0; 1];
                 r.read_exact(&mut len)?;
                 let len = u8::from_be_bytes(len);
                 if len > MAX_STRING_LEN {
-                    return Err(SerializationError::DeserializationError(
-                        "String too long".to_string(),
-                    ));
+                    return Err(CodecError::Deserialization("String too long".to_string()));
                 }
 
                 let mut data = vec![0; len as usize];
                 r.read_exact(&mut data)?;
 
                 String::from_utf8(data)
-                    .map_err(|_| "Non-UTF8 string data".into())
-                    .and_then(|x| $Name::try_from(x).map_err(|_| "Illegal Clarity string".into()))
+                    .map_err(|_| CodecError::Deserialization("Non-UTF8 string data".into()))
+                    .and_then(|x| {
+                        $Name::try_from(x).map_err(|_| {
+                            CodecError::Deserialization("Illegal Clarity string".into())
+                        })
+                    })
             }
         }
     };
@@ -265,13 +190,12 @@ impl PrincipalData {
         }
     }
 
-    fn inner_consensus_deserialize<R: Read>(
-        r: &mut R,
-    ) -> Result<PrincipalData, SerializationError> {
+    fn inner_consensus_deserialize<R: Read>(r: &mut R) -> Result<PrincipalData, CodecError> {
         let mut header = [0];
         r.read_exact(&mut header)?;
 
-        let prefix = TypePrefix::from_u8(header[0]).ok_or("Bad principal prefix")?;
+        let prefix = TypePrefix::from_u8(header[0])
+            .ok_or(CodecError::Deserialization("Bad principal prefix".into()))?;
 
         match prefix {
             TypePrefix::PrincipalStandard => {
@@ -285,7 +209,7 @@ impl PrincipalData {
                     name,
                 }))
             }
-            _ => Err("Bad principal prefix".into()),
+            _ => Err(CodecError::Deserialization("Bad principal prefix".into())),
         }
     }
 }
@@ -307,7 +231,7 @@ macro_rules! check_match {
         match $item {
             None => Ok(()),
             Some($Pattern) => Ok(()),
-            Some(x) => Err(SerializationError::DeserializeExpected(x.clone())),
+            Some(x) => Err(CodecError::DeserializeExpected(x.clone())),
         }
     };
 }
@@ -349,7 +273,7 @@ impl DeserializeStackItem {
     ///
     /// Returns `None` if this stack item either doesn't have an expected type, or the
     ///   next child is going to be sanitized/elided.
-    fn next_expected_type(&self) -> Result<Option<TypeSignature>, SerializationError> {
+    fn next_expected_type(&self) -> Result<Option<TypeSignature>, CodecError> {
         match self {
             DeserializeStackItem::List { expected_type, .. } => Ok(expected_type
                 .as_ref()
@@ -369,7 +293,7 @@ impl DeserializeStackItem {
                         return Ok(None);
                     }
                     let field_type = some_tuple.field_type(next_name).ok_or_else(|| {
-                        SerializationError::DeserializeExpected(TypeSignature::TupleType(
+                        CodecError::DeserializeExpected(TypeSignature::TupleType(
                             some_tuple.clone(),
                         ))
                     })?;
@@ -397,7 +321,7 @@ impl TypeSignature {
     /// size of a `(buff 1024*1024)` is `1+1024*1024` because of the
     /// type prefix byte. However, that is 1 byte larger than the maximum
     /// buffer size in Clarity.
-    pub fn max_serialized_size(&self) -> Result<u32, CheckErrors> {
+    pub fn max_serialized_size(&self) -> Result<u32, CodecError> {
         let type_prefix_size = 1;
 
         let max_output_size = match self {
@@ -408,7 +332,7 @@ impl TypeSignature {
                 // `some` or similar with `result` types).  So, when
                 // serializing an object with a `NoType`, the other
                 // branch should always be used.
-                return Err(CheckErrors::CouldNotDetermineSerializationType);
+                return Err(CodecError::CouldNotDetermineSerializationType);
             }
             TypeSignature::IntType => 16,
             TypeSignature::UIntType => 16,
@@ -420,14 +344,14 @@ impl TypeSignature {
                     .get_max_len()
                     .checked_mul(list_type.get_list_item_type().max_serialized_size()?)
                     .and_then(|x| x.checked_add(list_length_encode))
-                    .ok_or_else(|| CheckErrors::ValueTooLarge)?
+                    .ok_or_else(|| CodecError::ValueTooLarge)?
             }
             TypeSignature::SequenceType(SequenceSubtype::BufferType(buff_length)) => {
                 // u32 length as big-endian bytes
                 let buff_length_encode = 4;
                 u32::from(buff_length)
                     .checked_add(buff_length_encode)
-                    .ok_or_else(|| CheckErrors::ValueTooLarge)?
+                    .ok_or_else(|| CodecError::ValueTooLarge)?
             }
             TypeSignature::SequenceType(SequenceSubtype::StringType(StringSubtype::ASCII(
                 length,
@@ -437,7 +361,7 @@ impl TypeSignature {
                 // ascii is 1-byte per character
                 u32::from(length)
                     .checked_add(str_length_encode)
-                    .ok_or_else(|| CheckErrors::ValueTooLarge)?
+                    .ok_or_else(|| CodecError::ValueTooLarge)?
             }
             TypeSignature::SequenceType(SequenceSubtype::StringType(StringSubtype::UTF8(
                 length,
@@ -448,7 +372,7 @@ impl TypeSignature {
                 u32::from(length)
                     .checked_mul(4)
                     .and_then(|x| x.checked_add(str_length_encode))
-                    .ok_or_else(|| CheckErrors::ValueTooLarge)?
+                    .ok_or_else(|| CodecError::ValueTooLarge)?
             }
             TypeSignature::PrincipalType
             | TypeSignature::CallableType(_)
@@ -471,7 +395,7 @@ impl TypeSignature {
                         .checked_add(1) // length of key-name
                         .and_then(|x| x.checked_add(key.len() as u32)) // ClarityName is ascii-only, so 1 byte per length
                         .and_then(|x| x.checked_add(value_size))
-                        .ok_or_else(|| CheckErrors::ValueTooLarge)?;
+                        .ok_or_else(|| CodecError::ValueTooLarge)?;
                 }
                 total_size
             }
@@ -480,7 +404,7 @@ impl TypeSignature {
                     Ok(size) => size,
                     // if NoType, then this is just serializing a none
                     // value, which is only the type prefix
-                    Err(CheckErrors::CouldNotDetermineSerializationType) => 0,
+                    Err(CodecError::CouldNotDetermineSerializationType) => 0,
                     Err(e) => return Err(e),
                 }
             }
@@ -488,17 +412,17 @@ impl TypeSignature {
                 let (ok_type, err_type) = response_types.as_ref();
                 let (ok_type_max_size, no_ok_type) = match ok_type.max_serialized_size() {
                     Ok(size) => (size, false),
-                    Err(CheckErrors::CouldNotDetermineSerializationType) => (0, true),
+                    Err(CodecError::CouldNotDetermineSerializationType) => (0, true),
                     Err(e) => return Err(e),
                 };
                 let err_type_max_size = match err_type.max_serialized_size() {
                     Ok(size) => size,
-                    Err(CheckErrors::CouldNotDetermineSerializationType) => {
+                    Err(CodecError::CouldNotDetermineSerializationType) => {
                         if no_ok_type {
                             // if both the ok type and the error type are NoType,
                             //  throw a CheckError. This should not be possible, but the check
                             //  is done out of caution.
-                            return Err(CheckErrors::CouldNotDetermineSerializationType);
+                            return Err(CodecError::CouldNotDetermineSerializationType);
                         } else {
                             0
                         }
@@ -508,13 +432,13 @@ impl TypeSignature {
                 cmp::max(ok_type_max_size, err_type_max_size)
             }
             TypeSignature::ListUnionType(_) => {
-                return Err(CheckErrors::CouldNotDetermineSerializationType);
+                return Err(CodecError::CouldNotDetermineSerializationType);
             }
         };
 
         max_output_size
             .checked_add(type_prefix_size)
-            .ok_or_else(|| CheckErrors::ValueTooLarge)
+            .ok_or_else(|| CodecError::ValueTooLarge)
     }
 }
 
@@ -523,7 +447,7 @@ impl Value {
         r: &mut R,
         expected_type: Option<&TypeSignature>,
         sanitize: bool,
-    ) -> Result<Value, SerializationError> {
+    ) -> Result<Value, CodecError> {
         Self::deserialize_read_count(r, expected_type, sanitize).map(|(value, _)| value)
     }
 
@@ -536,7 +460,7 @@ impl Value {
         r: &mut R,
         expected_type: Option<&TypeSignature>,
         sanitize: bool,
-    ) -> Result<(Value, u64), SerializationError> {
+    ) -> Result<(Value, u64), CodecError> {
         let bound_value_serialization_bytes = if sanitize && expected_type.is_some() {
             SANITIZATION_READ_BOUND
         } else {
@@ -573,7 +497,7 @@ impl Value {
         r: &mut R,
         top_expected_type: Option<&TypeSignature>,
         sanitize: bool,
-    ) -> Result<Value, SerializationError> {
+    ) -> Result<Value, CodecError> {
         use super::Value::*;
 
         let mut stack = vec![DeserializeStackItem::TopLevel {
@@ -587,7 +511,7 @@ impl Value {
                 UNSANITIZED_DEPTH_CHECK
             };
             if stack.len() > depth_check {
-                return Err(CheckErrors::TypeSignatureTooDeep.into());
+                return Err(CodecError::TypeSignatureTooDeep.into());
             }
 
             #[allow(clippy::expect_used)]
@@ -598,7 +522,8 @@ impl Value {
 
             let mut header = [0];
             r.read_exact(&mut header)?;
-            let prefix = TypePrefix::from_u8(header[0]).ok_or("Bad type prefix")?;
+            let prefix = TypePrefix::from_u8(header[0])
+                .ok_or(CodecError::Deserialization("Bad type prefix".into()))?;
 
             let item = match prefix {
                 TypePrefix::Int => {
@@ -626,7 +551,7 @@ impl Value {
                             _ => false,
                         };
                         if !passed_test {
-                            return Err(SerializationError::DeserializeExpected(x.clone()));
+                            return Err(CodecError::DeserializeExpected(x.clone()));
                         }
                     }
 
@@ -634,7 +559,8 @@ impl Value {
 
                     r.read_exact(&mut data[..])?;
 
-                    Value::buff_from(data).map_err(|_| "Bad buffer".into())
+                    Value::buff_from(data)
+                        .map_err(|_| CodecError::Deserialization("Bad buffer".into()))
                 }
                 TypePrefix::BoolTrue => {
                     check_match!(expected_type, TypeSignature::BoolType)?;
@@ -663,7 +589,7 @@ impl Value {
                             let contained_type = match (committed, x) {
                                 (true, TypeSignature::ResponseType(types)) => Ok(&types.0),
                                 (false, TypeSignature::ResponseType(types)) => Ok(&types.1),
-                                _ => Err(SerializationError::DeserializeExpected(x.clone())),
+                                _ => Err(CodecError::DeserializeExpected(x.clone())),
                             }?;
                             Some(contained_type)
                         }
@@ -692,7 +618,7 @@ impl Value {
                         Some(x) => {
                             let contained_type = match x {
                                 TypeSignature::OptionalType(some_type) => Ok(some_type.as_ref()),
-                                _ => Err(SerializationError::DeserializeExpected(x.clone())),
+                                _ => Err(CodecError::DeserializeExpected(x.clone())),
                             }?;
                             Some(contained_type)
                         }
@@ -711,7 +637,7 @@ impl Value {
                     let len = u32::from_be_bytes(len);
 
                     if len > MAX_VALUE_SIZE {
-                        return Err("Illegal list type".into());
+                        return Err(CodecError::Deserialization("Illegal list type".into()));
                     }
 
                     let (list_type, _entry_type) = match expected_type.as_ref() {
@@ -720,13 +646,13 @@ impl Value {
                             if len > list_type.get_max_len() {
                                 // unwrap is safe because of the match condition
                                 #[allow(clippy::unwrap_used)]
-                                return Err(SerializationError::DeserializeExpected(
+                                return Err(CodecError::DeserializeExpected(
                                     expected_type.unwrap(),
                                 ));
                             }
                             (Some(list_type), Some(list_type.get_list_item_type()))
                         }
-                        Some(x) => return Err(SerializationError::DeserializeExpected(x.clone())),
+                        Some(x) => return Err(CodecError::DeserializeExpected(x.clone())),
                     };
 
                     if len > 0 {
@@ -746,9 +672,11 @@ impl Value {
                                 vec![],
                                 list_type.clone(),
                             )
-                            .map_err(|_| "Illegal list type")?
+                            .map_err(|_| CodecError::Deserialization("Illegal list type".into()))?
                         } else {
-                            Value::cons_list_unsanitized(vec![]).map_err(|_| "Illegal list type")?
+                            Value::cons_list_unsanitized(vec![]).map_err(|_| {
+                                CodecError::Deserialization("Illegal list type".into())
+                            })?
                         };
 
                         Ok(finished_list)
@@ -761,7 +689,7 @@ impl Value {
                     let expected_len = u64::from(len);
 
                     if len > MAX_VALUE_SIZE {
-                        return Err(SerializationError::DeserializationError(
+                        return Err(CodecError::Deserialization(
                             "Illegal tuple type".to_string(),
                         ));
                     }
@@ -773,20 +701,20 @@ impl Value {
                                 if u64::from(len) < tuple_type.len() {
                                     // unwrap is safe because of the match condition
                                     #[allow(clippy::unwrap_used)]
-                                    return Err(SerializationError::DeserializeExpected(
+                                    return Err(CodecError::DeserializeExpected(
                                         expected_type.unwrap(),
                                     ));
                                 }
                             } else if u64::from(len) != tuple_type.len() {
                                 // unwrap is safe because of the match condition
                                 #[allow(clippy::unwrap_used)]
-                                return Err(SerializationError::DeserializeExpected(
+                                return Err(CodecError::DeserializeExpected(
                                     expected_type.unwrap(),
                                 ));
                             }
                             Some(tuple_type)
                         }
-                        Some(x) => return Err(SerializationError::DeserializeExpected(x.clone())),
+                        Some(x) => return Err(CodecError::DeserializeExpected(x.clone())),
                     };
 
                     if len > 0 {
@@ -821,11 +749,13 @@ impl Value {
                                 vec![],
                                 tuple_type,
                             )
-                            .map_err(|_| "Illegal tuple type")
+                            .map_err(|_| CodecError::Deserialization("Illegal tuple type".into()))
                             .map(Value::from)?
                         } else {
                             TupleData::from_data(vec![])
-                                .map_err(|_| "Illegal tuple type")
+                                .map_err(|_| {
+                                    CodecError::Deserialization("Illegal tuple type".into())
+                                })
                                 .map(Value::from)?
                         };
                         Ok(finished_tuple)
@@ -844,7 +774,7 @@ impl Value {
                             _ => false,
                         };
                         if !passed_test {
-                            return Err(SerializationError::DeserializeExpected(x.clone()));
+                            return Err(CodecError::DeserializeExpected(x.clone()));
                         }
                     }
 
@@ -852,7 +782,8 @@ impl Value {
 
                     r.read_exact(&mut data[..])?;
 
-                    Value::string_ascii_from_bytes(data).map_err(|_| "Bad string".into())
+                    Value::string_ascii_from_bytes(data)
+                        .map_err(|_| CodecError::Deserialization("Bad string".into()))
                 }
                 TypePrefix::StringUTF8 => {
                     let mut total_len = [0; 4];
@@ -863,8 +794,9 @@ impl Value {
 
                     r.read_exact(&mut data[..])?;
 
-                    let value = Value::string_utf8_from_bytes(data)
-                        .map_err(|_| "Illegal string_utf8 type".into());
+                    let value = Value::string_utf8_from_bytes(data).map_err(|_| {
+                        CodecError::Deserialization("Illegal string_utf8 type".into())
+                    });
 
                     if let Some(x) = &expected_type {
                         let passed_test = match (x, &value) {
@@ -877,7 +809,7 @@ impl Value {
                             _ => false,
                         };
                         if !passed_test {
-                            return Err(SerializationError::DeserializeExpected(x.clone()));
+                            return Err(CodecError::DeserializeExpected(x.clone()));
                         }
                     }
 
@@ -895,7 +827,9 @@ impl Value {
                         "Deserializer reached unexpected path: item processed, but deserializer stack does not expect another value";
                         "item" => %item,
                     );
-                    return Err("Deserializer processed item, but deserializer stack does not expect another value".into());
+                    return Err(CodecError::Deserialization(
+                        "Deserializer processed item, but deserializer stack does not expect another value".into(),
+                    ));
                 };
                 match stack_bottom {
                     DeserializeStackItem::TopLevel { .. } => return Ok(item),
@@ -913,10 +847,13 @@ impl Value {
                                     items,
                                     list_type.clone(),
                                 )
-                                .map_err(|_| "Illegal list type")?
+                                .map_err(|_| {
+                                    CodecError::Deserialization("Illegal list type".into())
+                                })?
                             } else {
-                                Value::cons_list_unsanitized(items)
-                                    .map_err(|_| "Illegal list type")?
+                                Value::cons_list_unsanitized(items).map_err(|_| {
+                                    CodecError::Deserialization("Illegal list type".into())
+                                })?
                             };
 
                             finished_item.replace(finished_list);
@@ -958,7 +895,7 @@ impl Value {
                             // tuple is finished!
                             let finished_tuple = if let Some(tuple_type) = expected_type {
                                 if items.len() != tuple_type.len() as usize {
-                                    return Err(SerializationError::DeserializeExpected(
+                                    return Err(CodecError::DeserializeExpected(
                                         TypeSignature::TupleType(tuple_type),
                                     ));
                                 }
@@ -967,11 +904,15 @@ impl Value {
                                     items,
                                     &tuple_type,
                                 )
-                                .map_err(|_| "Illegal tuple type")
+                                .map_err(|_| {
+                                    CodecError::Deserialization("Illegal tuple type".into())
+                                })
                                 .map(Value::from)?
                             } else {
                                 TupleData::from_data(items)
-                                    .map_err(|_| "Illegal tuple type")
+                                    .map_err(|_| {
+                                        CodecError::Deserialization("Illegal tuple type".into())
+                                    })
                                     .map(Value::from)?
                             };
 
@@ -1002,27 +943,30 @@ impl Value {
                         }
                     }
                     DeserializeStackItem::OptionSome { .. } => {
-                        let finished_some = Value::some(item).map_err(|_x| "Value too large")?;
+                        let finished_some = Value::some(item)
+                            .map_err(|_x| CodecError::Deserialization("Value too large".into()))?;
                         finished_item.replace(finished_some);
                     }
                     DeserializeStackItem::ResponseOk { .. } => {
-                        let finished_some = Value::okay(item).map_err(|_x| "Value too large")?;
+                        let finished_some = Value::okay(item)
+                            .map_err(|_x| CodecError::Deserialization("Value too large".into()))?;
                         finished_item.replace(finished_some);
                     }
                     DeserializeStackItem::ResponseErr { .. } => {
-                        let finished_some = Value::error(item).map_err(|_x| "Value too large")?;
+                        let finished_some = Value::error(item)
+                            .map_err(|_x| CodecError::Deserialization("Value too large".into()))?;
                         finished_item.replace(finished_some);
                     }
                 };
             }
         }
 
-        Err(SerializationError::DeserializationError(
+        Err(CodecError::Deserialization(
             "Invalid data: stack ran out before finishing parsing".into(),
         ))
     }
 
-    pub fn serialize_write<W: Write>(&self, w: &mut W) -> Result<(), SerializationError> {
+    pub fn serialize_write<W: Write>(&self, w: &mut W) -> Result<(), CodecError> {
         use super::CharType::*;
         use super::PrincipalData::*;
         use super::SequenceData::{self, *};
@@ -1052,7 +996,7 @@ impl Value {
             Sequence(List(data)) => {
                 let len_bytes = data
                     .len()
-                    .map_err(|e| SerializationError::SerializationError(e.to_string()))?
+                    .map_err(|e| CodecError::Serialization(e.to_string()))?
                     .to_be_bytes();
                 w.write_all(&len_bytes)?;
                 for item in data.data.iter() {
@@ -1063,7 +1007,7 @@ impl Value {
                 let len_bytes = u32::from(
                     value
                         .len()
-                        .map_err(|e| SerializationError::SerializationError(e.to_string()))?,
+                        .map_err(|e| CodecError::Serialization(e.to_string()))?,
                 )
                 .to_be_bytes();
                 w.write_all(&len_bytes)?;
@@ -1080,7 +1024,7 @@ impl Value {
                 let len_bytes = u32::from(
                     value
                         .len()
-                        .map_err(|e| SerializationError::SerializationError(e.to_string()))?,
+                        .map_err(|e| CodecError::Serialization(e.to_string()))?,
                 )
                 .to_be_bytes();
                 w.write_all(&len_bytes)?;
@@ -1088,7 +1032,7 @@ impl Value {
             }
             Tuple(data) => {
                 let len_bytes = u32::try_from(data.data_map.len())
-                    .map_err(|e| SerializationError::SerializationError(e.to_string()))?
+                    .map_err(|e| CodecError::Serialization(e.to_string()))?
                     .to_be_bytes();
                 w.write_all(&len_bytes)?;
                 for (key, value) in data.data_map.iter() {
@@ -1109,7 +1053,7 @@ impl Value {
         bytes: &Vec<u8>,
         expected: &TypeSignature,
         sanitize: bool,
-    ) -> Result<Value, SerializationError> {
+    ) -> Result<Value, CodecError> {
         Value::deserialize_read(&mut bytes.as_slice(), Some(expected), sanitize)
     }
 
@@ -1121,8 +1065,9 @@ impl Value {
         hex: &str,
         expected: &TypeSignature,
         sanitize: bool,
-    ) -> Result<Value, SerializationError> {
-        let data = hex_bytes(hex).map_err(|_| "Bad hex string")?;
+    ) -> Result<Value, CodecError> {
+        let data =
+            hex_bytes(hex).map_err(|_| CodecError::Deserialization("Bad hex string".into()))?;
         Value::try_deserialize_bytes(&data, expected, sanitize)
     }
 
@@ -1138,12 +1083,12 @@ impl Value {
         bytes: &Vec<u8>,
         expected: &TypeSignature,
         sanitize: bool,
-    ) -> Result<Value, SerializationError> {
+    ) -> Result<Value, CodecError> {
         let input_length = bytes.len();
         let (value, read_count) =
             Value::deserialize_read_count(&mut bytes.as_slice(), Some(expected), sanitize)?;
         if read_count != (input_length as u64) {
-            Err(SerializationError::LeftoverBytesInDeserialization)
+            Err(CodecError::LeftoverBytesInDeserialization)
         } else {
             Ok(value)
         }
@@ -1151,22 +1096,23 @@ impl Value {
 
     /// Try to deserialize a value without type information. This *does not* perform sanitization
     ///  so it should not be used when decoding clarity database values.
-    fn try_deserialize_bytes_untyped(bytes: &Vec<u8>) -> Result<Value, SerializationError> {
+    fn try_deserialize_bytes_untyped(bytes: &Vec<u8>) -> Result<Value, CodecError> {
         Value::deserialize_read(&mut bytes.as_slice(), None, false)
     }
 
     /// Try to deserialize a value from a hex string without type information. This *does not*
     /// perform sanitization.
-    pub fn try_deserialize_hex_untyped(hex: &str) -> Result<Value, SerializationError> {
+    pub fn try_deserialize_hex_untyped(hex: &str) -> Result<Value, CodecError> {
         let hex = hex.strip_prefix("0x").unwrap_or(hex);
-        let data = hex_bytes(hex).map_err(|_| "Bad hex string")?;
+        let data =
+            hex_bytes(hex).map_err(|_| CodecError::Deserialization("Bad hex string".into()))?;
         Value::try_deserialize_bytes_untyped(&data)
     }
 
-    pub fn serialized_size(&self) -> Result<u32, SerializationError> {
+    pub fn serialized_size(&self) -> Result<u32, CodecError> {
         let mut counter = WriteCounter { count: 0 };
         self.serialize_write(&mut counter).map_err(|_| {
-            SerializationError::DeserializationError(
+            CodecError::Deserialization(
                 "Error: Failed to count serialization length of Clarity value".into(),
             )
         })?;
@@ -1198,15 +1144,15 @@ impl Write for WriteCounter {
 }
 
 impl Value {
-    pub fn serialize_to_vec(&self) -> Result<Vec<u8>, InterpreterError> {
+    pub fn serialize_to_vec(&self) -> Result<Vec<u8>, CodecError> {
         let mut byte_serialization = Vec::new();
         self.serialize_write(&mut byte_serialization)
-            .map_err(|_| InterpreterError::Expect("IOError filling byte buffer.".into()))?;
+            .map_err(|_| CodecError::Expect("IOError filling byte buffer.".into()))?;
         Ok(byte_serialization)
     }
 
     /// This does *not* perform any data sanitization
-    pub fn serialize_to_hex(&self) -> Result<String, InterpreterError> {
+    pub fn serialize_to_hex(&self) -> Result<String, CodecError> {
         let byte_serialization = self.serialize_to_vec()?;
         Ok(to_hex(byte_serialization.as_slice()))
     }
@@ -1334,13 +1280,13 @@ impl ClaritySerializable for u32 {
 }
 
 impl ClarityDeserializable<u32> for u32 {
-    fn deserialize(input: &str) -> Result<Self, ClarityError> {
+    fn deserialize(input: &str) -> Result<Self, CodecError> {
         let bytes = hex_bytes(input).map_err(|_| {
-            InterpreterError::Expect("u32 deserialization: failed decoding bytes.".into())
+            CodecError::Expect("u32 deserialization: failed decoding bytes.".into())
         })?;
         assert_eq!(bytes.len(), 4);
         Ok(u32::from_be_bytes(bytes[0..4].try_into().map_err(
-            |_| InterpreterError::Expect("u32 deserialization: failed reading.".into()),
+            |_| CodecError::Expect("u32 deserialization: failed reading.".into()),
         )?))
     }
 }
@@ -1350,31 +1296,26 @@ impl ClarityDeserializable<u32> for u32 {
 impl StacksMessageCodec for Value {
     fn consensus_serialize<W: Write>(&self, fd: &mut W) -> Result<(), codec_error> {
         self.serialize_write(fd).map_err(|e| match e {
-            SerializationError::IOError(io_e) => codec_error::WriteError(io_e.err),
+            CodecError::Io(io_e) => codec_error::WriteError(io_e),
             other => codec_error::SerializeError(other.to_string()),
         })
     }
 
     fn consensus_deserialize<R: Read>(fd: &mut R) -> Result<Value, codec_error> {
         Value::deserialize_read(fd, None, false).map_err(|e| match e {
-            SerializationError::IOError(e) => codec_error::ReadError(e.err),
+            CodecError::Io(io_e) => codec_error::ReadError(io_e),
             _ => codec_error::DeserializeError(format!("Failed to decode clarity value: {:?}", &e)),
         })
     }
 }
 
 #[cfg(test)]
-#[allow(non_snake_case)]
 pub mod tests {
     use std::io::Write;
 
     use super::super::*;
-    use super::SerializationError;
+    use super::CodecError;
     use crate::traits::{ClarityDeserializable, ClaritySerializable};
-
-    // fn buff_type(size: u32) -> TypeSignature {
-    //     TypeSignature::SequenceType(SequenceSubtype::BufferType(size.try_into().unwrap()))
-    // }
 
     fn test_deser_ser(v: Value) {
         assert_eq!(
@@ -1405,7 +1346,7 @@ pub mod tests {
     fn test_bad_expectation(v: Value, e: TypeSignature) {
         assert!(matches!(
             Value::try_deserialize_hex(&v.serialize_to_hex().unwrap(), &e, false).unwrap_err(),
-            SerializationError::DeserializeExpected(_)
+            CodecError::DeserializeExpected(_)
         ));
     }
 
@@ -1442,9 +1383,9 @@ pub mod tests {
         )
         .unwrap();
 
-        assert_eq!(
+        matches!(
             Value::deserialize_read(&mut too_big.as_slice(), None, false).unwrap_err(),
-            "Illegal list type".into()
+            CodecError::Deserialization(e) if e == "Illegal list type"
         );
 
         // make a list that says it is longer than it is!
@@ -1469,9 +1410,9 @@ pub mod tests {
         match Value::deserialize_read(&mut eof.as_slice(), None, false) {
             Ok(_) => panic!("Accidentally parsed truncated slice"),
             Err(eres) => match eres {
-                SerializationError::IOError(ioe) => match ioe.err.kind() {
+                CodecError::Io(io_e) => match io_e.kind() {
                     std::io::ErrorKind::UnexpectedEof => {}
-                    _ => panic!("Invalid I/O error: {:?}", &ioe),
+                    _ => panic!("Invalid I/O error: {:?}", &io_e),
                 },
                 _ => panic!("Invalid deserialize error: {:?}", &eres),
             },
@@ -1565,8 +1506,8 @@ pub mod tests {
     //     match Value::deserialize_read(&mut eof.as_slice(), None, false) {
     //         Ok(_) => panic!("Accidentally parsed truncated slice"),
     //         Err(eres) => match eres {
-    //             SerializationError::IOError(ioe) => match ioe.err.kind() {
-    //                 std::io::ErrorKind::UnexpectedEof => {}
+    //             CodecError::Io(ioe) => match ioe.err.kind() {
+    //                 std::io::ErrorKind::ExpectEof => {}
     //                 _ => panic!("Invalid I/O error: {:?}", &ioe),
     //             },
     //             _ => panic!("Invalid deserialize error: {:?}", &eres),
@@ -1789,7 +1730,7 @@ pub mod tests {
                 false
             )
             .unwrap_err(),
-            SerializationError::DeserializeExpected(_)
+            CodecError::DeserializeExpected(_)
         ));
 
         // field type mismatch
@@ -1800,7 +1741,7 @@ pub mod tests {
                 false
             )
             .unwrap_err(),
-            SerializationError::DeserializeExpected(_)
+            CodecError::DeserializeExpected(_)
         ));
 
         // field not-present in expected
@@ -1811,14 +1752,17 @@ pub mod tests {
                 false
             )
             .unwrap_err(),
-            SerializationError::DeserializeExpected(_)
+            CodecError::DeserializeExpected(_)
         ));
     }
 
     #[test]
     fn test_vectors() {
         let tests = [
-            ("1010", Err("Bad type prefix".into())),
+            (
+                "1010",
+                Err(CodecError::Deserialization("Bad type prefix".to_string())),
+            ),
             ("0000000000000000000000000000000001", Ok(Value::Int(1))),
             ("00ffffffffffffffffffffffffffffffff", Ok(Value::Int(-1))),
             ("0100000000000000000000000000000001", Ok(Value::UInt(1))),
@@ -1919,9 +1863,9 @@ pub mod tests {
             11, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
         ];
 
-        assert_eq!(
+        matches!(
             Value::try_deserialize_bytes_untyped(&buff).unwrap_err(),
-            SerializationError::DeserializationError("Illegal list type".to_string())
+            CodecError::Deserialization(e) if e == "Illegal list type"
         );
     }
 
@@ -1931,18 +1875,18 @@ pub mod tests {
             12, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
         ];
 
-        assert_eq!(
+        matches!(
             Value::try_deserialize_bytes_untyped(&buff).unwrap_err(),
-            SerializationError::DeserializationError("Illegal tuple type".to_string())
+            CodecError::Deserialization(e) if e == "Illegal tuple type"
         );
     }
 
     #[test]
     fn try_overflow_stack() {
         let input = "08080808080808080808070707080807080808080808080708080808080708080707080707080807080808080808080708080808080708080707080708070807080808080808080708080808080708080708080808080808080807070807080808080808070808070707080807070808070808080808070808070708070807080808080808080707080708070807080708080808080808070808080808070808070808080808080808080707080708080808080807080807070708080707080807080808080807080807070807080708080808080808070708070808080808080708080707070808070708080807080807070708";
-        assert_eq!(
-            Err(CheckErrors::TypeSignatureTooDeep.into()),
-            Value::try_deserialize_hex_untyped(input)
+        matches!(
+            Value::try_deserialize_hex_untyped(input),
+            Err(CodecError::TypeSignatureTooDeep)
         );
     }
 

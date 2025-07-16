@@ -29,9 +29,7 @@ pub use stacks_common::{
     impl_byte_array_serde, types as stacks_types, util,
 };
 
-#[macro_use]
-/// The Clarity virtual machine
-pub mod vm;
+pub mod errors;
 pub mod representations;
 pub mod traits;
 pub mod types;

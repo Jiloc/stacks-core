@@ -14,13 +14,22 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#![cfg(test)]
+#![cfg(any(test, feature = "testing"))]
 
+use crate::errors::CodecError;
 use crate::types::Value;
-use crate::vm::errors::Error;
 
 impl Value {
-    pub fn list_from(list_data: Vec<Value>) -> Result<Value, Error> {
+    pub fn list_from(list_data: Vec<Value>) -> Result<Value, CodecError> {
         Value::cons_list_unsanitized(list_data)
+    }
+}
+
+// Implement PartialEq for testing and simple equality checks by comparing the
+// string representations of each error. This avoids requiring all wrapped
+// fields (like `std::io::Error`) to implement PartialEq.
+impl PartialEq for CodecError {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_string() == other.to_string()
     }
 }
