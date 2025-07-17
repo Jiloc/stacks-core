@@ -26,7 +26,6 @@ mutants = "0.0.3"
 
 [features]
 default = []
-developer-mode = ["stacks_common/developer-mode"]
 testing = []
 slog_json = ["stacks_common/slog_json"]
 
