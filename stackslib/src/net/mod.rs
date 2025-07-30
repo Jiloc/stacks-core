@@ -692,9 +692,9 @@ impl<'a> StacksNodeState<'a> {
         res
     }
 
-    pub fn canonical_stacks_tip_height(&mut self) -> u32 {
+    pub fn canonical_stacks_tip_height(&mut self) -> u64 {
         self.with_node_state(|network, _, _, _, _| {
-            network.burnchain_tip.canonical_stacks_tip_height as u32
+            network.burnchain_tip.canonical_stacks_tip_height
         })
     }
 
@@ -806,6 +806,14 @@ impl<'a> StacksNodeState<'a> {
                 }
             }
         })
+    }
+
+    pub fn update_highest_stacks_height_of_neighbors(&mut self, new_tip_height: Option<u64>) {
+        self.with_node_state(|network, _, _, _, _| {
+            network.highest_stacks_height_of_neighbors = network
+                .highest_stacks_height_of_neighbors
+                .max(new_tip_height.unwrap_or(0));
+        });
     }
 }
 

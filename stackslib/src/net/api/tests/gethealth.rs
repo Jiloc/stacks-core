@@ -21,9 +21,7 @@ use clarity::types::StacksEpochId;
 use super::TestRPC;
 use crate::chainstate::nakamoto::{NakamotoBlock, NakamotoBlockHeader};
 use crate::chainstate::stacks::boot::RewardSet;
-use crate::net::api::gethealth::{
-    NeighborsScope, RPCGetHealthRequestHandler, RPCGetHealthResponse,
-};
+use crate::net::api::gethealth::{RPCGetHealthRequestHandler, RPCGetHealthResponse};
 use crate::net::api::gettenureinfo::RPCGetTenureInfo;
 use crate::net::connection::ConnectionOptions;
 use crate::net::download::nakamoto::{
@@ -40,7 +38,7 @@ fn test_try_parse_request() {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 33333);
     let mut http = StacksHttp::new(addr.clone(), &ConnectionOptions::default());
 
-    let request = StacksHttpRequest::new_gethealth(addr.into(), NeighborsScope::Initial);
+    let request = StacksHttpRequest::new_gethealth(addr.into());
     let bytes = request.try_serialize().unwrap();
 
     let (parsed_preamble, offset) = http.read_preamble(&bytes).unwrap();
@@ -166,7 +164,7 @@ fn setup_and_run_nakamoto_health_test(
 
     // --- Invoke the Handler ---
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 33333);
-    let request = StacksHttpRequest::new_gethealth(addr.into(), NeighborsScope::Initial);
+    let request = StacksHttpRequest::new_gethealth(addr.into());
     let mut responses = rpc_test.run(vec![request]);
     let response = responses.remove(0);
 
@@ -330,7 +328,7 @@ fn test_get_health_500_no_initial_neighbors() {
 
     // --- Invoke the Handler ---
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 33333);
-    let request = StacksHttpRequest::new_gethealth(addr.into(), NeighborsScope::Initial);
+    let request = StacksHttpRequest::new_gethealth(addr.into());
     let mut responses = rpc_test.run(vec![request]);
     let response = responses.remove(0);
 
@@ -360,7 +358,7 @@ fn test_get_health_500_no_inv_state_pre_nakamoto() {
 
     // --- Invoke the Handler ---
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 33333);
-    let request = StacksHttpRequest::new_gethealth(addr.into(), NeighborsScope::Initial);
+    let request = StacksHttpRequest::new_gethealth(addr.into());
     let mut responses = rpc_test.run(vec![request]);
     let response = responses.remove(0);
 
@@ -386,7 +384,7 @@ fn test_get_health_500_no_download_state() {
     let rpc_test = TestRPC::setup_nakamoto(function_name!(), &test_observer);
     // --- Invoke the Handler ---
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 33333);
-    let request = StacksHttpRequest::new_gethealth(addr.into(), NeighborsScope::Initial);
+    let request = StacksHttpRequest::new_gethealth(addr.into());
     let mut responses = rpc_test.run(vec![request]);
     let response = responses.remove(0);
     // --- Assertions ---
@@ -411,7 +409,7 @@ fn test_get_health_500_no_peers_stats() {
     rpc_test.peer_2.network.init_nakamoto_block_downloader();
     // --- Invoke the Handler ---
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 33333);
-    let request = StacksHttpRequest::new_gethealth(addr.into(), NeighborsScope::Initial);
+    let request = StacksHttpRequest::new_gethealth(addr.into());
     let mut responses = rpc_test.run(vec![request]);
     let response = responses.remove(0);
     // --- Assertions ---

@@ -723,7 +723,6 @@ impl NakamotoTenureDownloader {
             );
             return Err(NetError::PeerNotConnected);
         };
-
         let request = match self.make_next_download_request(peerhost) {
             Ok(Some(request)) => request,
             Ok(None) => {

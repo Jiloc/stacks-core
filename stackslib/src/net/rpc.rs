@@ -28,7 +28,8 @@ use crate::monitoring;
 use crate::net::connection::{ConnectionHttp, ConnectionOptions, ReplyHandleHttp};
 use crate::net::http::HttpResponseContents;
 use crate::net::httpcore::{
-    StacksHttp, StacksHttpMessage, StacksHttpRequest, StacksHttpResponse, HTTP_REQUEST_ID_RESERVED,
+    HttpPreambleExtensions as _, StacksHttp, StacksHttpMessage, StacksHttpRequest,
+    StacksHttpResponse, HTTP_REQUEST_ID_RESERVED,
 };
 use crate::net::{Error as net_error, StacksMessageType, StacksNodeState};
 use crate::util_lib::strings::UrlString;
@@ -60,8 +61,6 @@ pub struct ConversationHttp {
     last_response_timestamp: u64,
     /// absolute time when this conversation was instantiated
     connection_time: u64,
-    /// stacks canonical chain tip that this peer reported
-    canonical_stacks_tip_height: Option<u32>,
     /// Ongoing replies
     reply_streams: VecDeque<(ReplyHandleHttp, HttpResponseContents, bool)>,
     /// outstanding request
@@ -114,7 +113,6 @@ impl ConversationHttp {
             peer_addr,
             outbound_url,
             peer_host,
-            canonical_stacks_tip_height: None,
             pending_request: None,
             pending_response: None,
             keep_alive: true,
@@ -500,7 +498,6 @@ impl ConversationHttp {
                         req,
                         |conv_http, req| conv_http.handle_request(req, node),
                     )?;
-
                     let msg_opt_log = if let Some(ref msg) = msg_opt {
                         msg.get_message_description()
                     } else {
@@ -528,6 +525,11 @@ impl ConversationHttp {
                     info!("Handled StacksHTTPRequest Error"; "path" => %path, "processing_time_ms" => start_time.elapsed().as_millis(), "conn_id" => self.conn_id, "peer_addr" => &self.peer_addr);
                 }
                 StacksHttpMessage::Response(resp) => {
+                    error!("RESPONSE HEADERS: {self:?} {:?}", &resp.preamble().headers);
+                    node.update_highest_stacks_height_of_neighbors(
+                        resp.preamble().get_canonical_stacks_tip_height(),
+                    );
+
                     // Is there someone else waiting for this message?  If so, pass it along.
                     // (this _should_ be our pending_request handle)
                     match self

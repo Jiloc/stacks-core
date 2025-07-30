@@ -474,6 +474,8 @@ pub struct PeerNetwork {
 
     /// Current Stacks tip -- the highest block's consensus hash, block hash, and height
     pub stacks_tip: StacksTipInfo,
+    /// Highest stacks block height received from RPC responses from neighbors
+    pub highest_stacks_height_of_neighbors: u64,
     /// Parent tenure Stacks tip -- the last block in the current tip's parent tenure.
     /// In epoch 2.x, this is the parent block.
     /// In nakamoto, this is the last block in the parent tenure
@@ -704,6 +706,7 @@ impl PeerNetwork {
                 first_burn_header_ts as u64,
             ),
             stacks_tip: StacksTipInfo::empty(),
+            highest_stacks_height_of_neighbors: 0,
             parent_stacks_tip: StacksTipInfo::empty(),
             tenure_start_block_id: StacksBlockId([0x00; 32]),
             current_reward_sets: BTreeMap::new(),
