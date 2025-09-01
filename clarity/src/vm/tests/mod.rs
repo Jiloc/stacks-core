@@ -23,6 +23,7 @@ use super::ClarityVersion;
 use crate::vm::contexts::OwnedEnvironment;
 pub use crate::vm::database::BurnStateDB;
 use crate::vm::database::MemoryBackingStore;
+use crate::vm::SymbolicExpression;
 
 mod assets;
 mod contracts;
@@ -162,7 +163,7 @@ pub fn tl_env_factory() -> TopLevelMemoryEnvironmentGenerator {
 
 pub struct MemoryEnvironmentGenerator(MemoryBackingStore);
 impl MemoryEnvironmentGenerator {
-    fn get_env(&mut self, epoch: StacksEpochId) -> OwnedEnvironment {
+    fn get_env(&mut self, epoch: StacksEpochId) -> OwnedEnvironment<'_, '_> {
         let mut db = self.0.as_clarity_db();
         db.begin();
         db.set_clarity_epoch_version(epoch).unwrap();
@@ -181,7 +182,7 @@ impl MemoryEnvironmentGenerator {
 
 pub struct TopLevelMemoryEnvironmentGenerator(MemoryBackingStore);
 impl TopLevelMemoryEnvironmentGenerator {
-    pub fn get_env(&mut self, epoch: StacksEpochId) -> OwnedEnvironment {
+    pub fn get_env(&mut self, epoch: StacksEpochId) -> OwnedEnvironment<'_, '_> {
         let mut db = self.0.as_clarity_db();
         db.begin();
         db.set_clarity_epoch_version(epoch).unwrap();
@@ -212,5 +213,12 @@ pub fn test_only_mainnet_to_chain_id(mainnet: bool) -> u32 {
         CHAIN_ID_MAINNET
     } else {
         CHAIN_ID_TESTNET
+    }
+}
+
+impl SymbolicExpression {
+    pub fn with_id(mut self, id: u64) -> Self {
+        self.id = id;
+        self
     }
 }

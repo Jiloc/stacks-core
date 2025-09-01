@@ -22,7 +22,10 @@ use std::{char, fmt, str};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use stacks_common::address::c32;
+use stacks_common::address::{
+    C32_ADDRESS_VERSION_MAINNET_MULTISIG, C32_ADDRESS_VERSION_MAINNET_SINGLESIG,
+    C32_ADDRESS_VERSION_TESTNET_MULTISIG, c32,
+};
 use stacks_common::types::StacksEpochId;
 use stacks_common::types::chainstate::StacksAddress;
 #[cfg(feature = "testing")]
@@ -107,6 +110,16 @@ impl StandardPrincipalData {
     pub fn destruct(self) -> (u8, [u8; 20]) {
         let Self(version, bytes) = self;
         (version, bytes)
+    }
+
+    pub fn is_mainnet(self) -> bool {
+        self.0 == C32_ADDRESS_VERSION_MAINNET_MULTISIG
+            || self.0 == C32_ADDRESS_VERSION_MAINNET_SINGLESIG
+    }
+
+    pub fn is_multisig(self) -> bool {
+        self.0 == C32_ADDRESS_VERSION_MAINNET_MULTISIG
+            || self.0 == C32_ADDRESS_VERSION_TESTNET_MULTISIG
     }
 }
 

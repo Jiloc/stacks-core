@@ -35,6 +35,7 @@ use libsigner::v0::messages::{
 use libsigner::v0::signer_state::MinerState;
 use libsigner::{BlockProposal, SignerEntries, SignerEventTrait};
 use serde::{Deserialize, Serialize};
+use stacks::burnchains::Txid;
 use stacks::chainstate::coordinator::comm::CoordinatorChannels;
 use stacks::chainstate::nakamoto::signer_set::NakamotoSigners;
 use stacks::chainstate::nakamoto::NakamotoBlock;
@@ -70,9 +71,9 @@ use super::nakamoto_integrations::{
 use super::neon_integrations::{
     copy_dir_all, get_account, get_sortition_info_ch, submit_tx_fallible, Account,
 };
+use crate::burnchains::bitcoin::core_controller::BitcoinCoreController;
 use crate::neon::Counters;
 use crate::run_loop::boot_nakamoto;
-use crate::tests::bitcoin_regtest::BitcoinCoreController;
 use crate::tests::nakamoto_integrations::{
     naka_neon_integration_conf, next_block_and_wait_for_commits, POX_4_DEFAULT_STACKER_BALANCE,
 };
@@ -239,11 +240,15 @@ impl<Z: SpawnedSignerTrait> SignerTest<Z> {
         let (mut naka_conf, _miner_account) =
             naka_neon_integration_conf(snapshot_name.map(|n| n.as_bytes()));
 
+        naka_conf.miner.activated_vrf_key_path =
+            Some(format!("{}/vrf_key", naka_conf.node.working_dir));
+
         node_config_modifier(&mut naka_conf);
 
         // Add initial balances to the config
         for (address, amount) in initial_balances.iter() {
-            naka_conf.add_initial_balance(PrincipalData::from(*address).to_string(), *amount);
+            naka_conf
+                .add_initial_balance(PrincipalData::from(address.clone()).to_string(), *amount);
         }
 
         // So the combination is... one, two, three, four, five? That's the stupidest combination I've ever heard in my life!
@@ -364,7 +369,11 @@ impl<Z: SpawnedSignerTrait> SignerTest<Z> {
             let metadata_path = snapshot_path.join("metadata.json");
             if !metadata_path.clone().exists() {
                 warn!("Snapshot metadata file does not exist, not restoring snapshot");
-                return SetupSnapshotResult::NoSnapshot;
+                std::fs::remove_dir_all(snapshot_path.clone()).unwrap();
+                return SetupSnapshotResult::WithSnapshot(SnapshotSetupInfo {
+                    snapshot_path: snapshot_path.clone(),
+                    snapshot_exists: false,
+                });
             }
             let Ok(metadata) = serde_json::from_reader::<_, SnapshotMetadata>(
                 File::open(metadata_path.clone()).unwrap(),
@@ -1066,6 +1075,20 @@ impl<Z: SpawnedSignerTrait> SignerTest<Z> {
         })
     }
 
+    pub fn wait_for_replay_set_eq(&self, timeout: u64, expected_txids: Vec<String>) {
+        self.wait_for_signer_state_check(timeout, |state| {
+            let Some(replay_set) = state.get_tx_replay_set() else {
+                return Ok(false);
+            };
+            let txids = replay_set
+                .iter()
+                .map(|tx| tx.txid().to_hex())
+                .collect::<Vec<_>>();
+            Ok(txids == expected_txids)
+        })
+        .expect("Timed out waiting for replay set to be equal to expected txids");
+    }
+
     /// Replace the test's configured signer st
     pub fn replace_signers(
         &mut self,
@@ -1424,6 +1447,35 @@ impl<Z: SpawnedSignerTrait> SignerTest<Z> {
         }
     }
 
+    /// Kills the signer runloop at index `signer_idx`
+    ///  and returns GlobalConfig of the killed signer
+    ///
+    /// # Panics
+    /// Panics if `signer_idx` is out of bounds
+    fn stop_signer(&mut self, signer_idx: usize) -> stacks_signer::config::GlobalConfig {
+        let running_signer = self.spawned_signers.remove(signer_idx);
+        let _signer_key = self.signer_stacks_private_keys.remove(signer_idx);
+        let signer_config = self.signer_configs.remove(signer_idx);
+        running_signer.stop();
+        signer_config
+    }
+
+    /// (Re)starts a new signer runloop with the given private key and adds it to the list
+    /// of running signers, updating the list of signer_stacks_private_keys and signer_configs
+    fn restart_signer(
+        &mut self,
+        signer_idx: usize,
+        signer_config: stacks_signer::config::GlobalConfig,
+    ) {
+        info!("Restarting signer");
+        self.signer_stacks_private_keys
+            .insert(signer_idx, signer_config.stacks_private_key.clone());
+        self.signer_configs
+            .insert(signer_idx, signer_config.clone());
+        self.spawned_signers
+            .insert(signer_idx, Z::new(signer_config));
+    }
+
     /// Get the latest block response from the given slot
     pub fn get_latest_block_response(&self, slot_id: u32) -> BlockResponse {
         let mut stackerdb = StackerDB::new_normal(
@@ -1555,6 +1607,31 @@ impl<Z: SpawnedSignerTrait> SignerTest<Z> {
             .send_message_with_retry::<SignerMessage>(accepted.into())
             .expect("Failed to send accept signature");
     }
+
+    /// Get the txid of the parent block commit transaction for the given miner
+    pub fn get_parent_block_commit_txid(&self, miner_pk: &StacksPublicKey) -> Option<Txid> {
+        let Some(confirmed_utxo) = self
+            .running_nodes
+            .btc_regtest_controller
+            .get_all_utxos(&miner_pk)
+            .into_iter()
+            .find(|utxo| utxo.confirmations == 0)
+        else {
+            return None;
+        };
+        let unconfirmed_txid = Txid::from_bitcoin_tx_hash(&confirmed_utxo.txid);
+        let unconfirmed_tx = self
+            .running_nodes
+            .btc_regtest_controller
+            .get_raw_transaction(&unconfirmed_txid);
+        let parent_txid = unconfirmed_tx
+            .input
+            .get(0)
+            .expect("First input should exist")
+            .previous_output
+            .txid;
+        Some(Txid::from_bitcoin_tx_hash(&parent_txid))
+    }
 }
 
 fn setup_stx_btc_node<G: FnMut(&mut NeonConfig)>(
@@ -1620,7 +1697,7 @@ fn setup_stx_btc_node<G: FnMut(&mut NeonConfig)>(
     node_config_modifier(&mut naka_conf);
 
     info!("Make new BitcoinCoreController");
-    let mut btcd_controller = BitcoinCoreController::new(naka_conf.clone());
+    let mut btcd_controller = BitcoinCoreController::from_stx_config(&naka_conf);
     btcd_controller
         .start_bitcoind()
         .map_err(|_e| ())

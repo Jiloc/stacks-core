@@ -130,6 +130,8 @@ pub struct Signer {
     pub validate_with_replay_tx: bool,
     /// Scope of Tx Replay in terms of Burn block boundaries
     pub tx_replay_scope: ReplayScopeOpt,
+    /// The number of blocks after the past tip to reset the replay set
+    pub reset_replay_set_after_fork_blocks: u64,
     /// Time to wait between updating our local state machine view point and capitulating to other signers miner view
     pub capitulate_miner_view_timeout: Duration,
     /// The last time we capitulated our miner viewpoint
@@ -310,6 +312,7 @@ impl SignerTrait<SignerMessage> for Signer {
             global_state_evaluator,
             validate_with_replay_tx: signer_config.validate_with_replay_tx,
             tx_replay_scope: None,
+            reset_replay_set_after_fork_blocks: signer_config.reset_replay_set_after_fork_blocks,
             capitulate_miner_view_timeout: signer_config.capitulate_miner_view_timeout,
             last_capitulate_miner_view: SystemTime::now(),
             #[cfg(any(test, feature = "testing"))]
@@ -715,17 +718,26 @@ impl Signer {
         block: &NakamotoBlock,
     ) -> Option<BlockResponse> {
         // First update our global state evaluator with our local state if we have one
-        let version = self.get_signer_protocol_version();
+        let local_version = self.get_signer_protocol_version();
         if let Ok(update) = self
             .local_state_machine
-            .try_into_update_message_with_version(version)
+            .try_into_update_message_with_version(local_version)
         {
             self.global_state_evaluator
-                .insert_update(self.stacks_address, update);
+                .insert_update(self.stacks_address.clone(), update);
         };
         let Some(latest_version) = self
             .global_state_evaluator
             .determine_latest_supported_signer_protocol_version()
+            .or_else(|| {
+                // Don't default if we are in a global consensus activation state as its pointless
+                if SortitionStateVersion::from_protocol_version(local_version).uses_global_state() {
+                    None
+                } else {
+                    warn!("{self}: No consensus on signer protocol version. Defaulting to local state version: {local_version}.");
+                    Some(local_version)
+                }
+            })
         else {
             warn!(
                 "{self}: No consensus on signer protocol version. Unable to validate block. Rejecting.";

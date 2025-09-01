@@ -94,7 +94,7 @@ pub enum CodecError {
     CouldNotDetermineType,
 
     // --- Naming and Identifier Errors ---
-    #[error("Name '{0}' is already used in this tuple")]
+    #[error("defining '{0}' conflicts with previous value")]
     NameAlreadyUsedInTuple(String),
 
     #[error("Could not find field '{0}' in tuple '{1}'")]
