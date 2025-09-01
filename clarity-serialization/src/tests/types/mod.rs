@@ -201,6 +201,7 @@ fn expect_buff_too_small() {
     let _ = buff.expect_buff(4).unwrap();
 }
 
+#[test]
 fn principal_is_mainnet() {
     let principal =
         PrincipalData::parse_standard_principal("SPXACZ2NS34QHWCMAK1V2QJK0XB6WM6N5AB7RWYB")
