@@ -201,7 +201,6 @@ fn expect_buff_too_small() {
     let _ = buff.expect_buff(4).unwrap();
 }
 
-
 fn principal_is_mainnet() {
     let principal =
         PrincipalData::parse_standard_principal("SPXACZ2NS34QHWCMAK1V2QJK0XB6WM6N5AB7RWYB")
@@ -245,3 +244,4 @@ fn principal_is_multisig() {
         PrincipalData::parse_standard_principal("SNBPC7AHXCBAQSW6RKGEXVG119H2933ZYR63HD32")
             .unwrap();
     assert!(principal.is_multisig());
+}
